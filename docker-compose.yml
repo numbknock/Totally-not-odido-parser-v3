@@ -1,0 +1,13 @@
+services:
+  app:
+    # Prebuilt image published from this repository's GitHub Actions workflow.
+    image: ghcr.io/darkqwertyhunter/totally-not-odido-parser-v2:latest
+    container_name: totally-not-odido-parser-v2
+    # Expose the web UI and API on http://localhost:8080.
+    ports:
+      - "8080:8080"
+    # Mount current folder into /data so dataset.txt and dataset.sqlite persist on host.
+    volumes:
+      - ./:/data
+    # Restart automatically unless manually stopped.
+    restart: unless-stopped
