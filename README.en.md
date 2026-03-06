@@ -1,5 +1,5 @@
 # Totally-not-odido-parser-v2
-
+![Screenshot](screen.png)
 Local viewer for large `dataset.txt` files.
 
 Run one command, the web app comes online immediately, and data is ingested/indexed in the background.
