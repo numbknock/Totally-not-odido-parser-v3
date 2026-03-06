@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Records</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="title-block">
+      <h1>Records</h1>
+      <p class="sub">Ultra-scale explorer for indexed customer records</p>
+    </div>
+    <div class="top-actions">
+      <span class="badge">LIVE INDEX</span>
+      <a class="nav-link" href="/analytics">Analytics</a>
+      <div class="health">
+        <span class="dot" id="health-dot"></span>
+        <span id="health-text">checking backend...</span>
+        <span id="index-text" class="health-sub">index status onbekend...</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel filters">
+      <h2>Query</h2>
+      <p class="helper">Tip: druk <code>/</code> om direct te zoeken, <code>n</code>/<code>p</code> voor pagina.</p>
+      <label>
+        Keyword
+        <input id="q" type="text" placeholder="Name, ID, city..." />
+      </label>
+      <details class="advanced" id="advanced-json">
+        <summary>Advanced JSON Filter</summary>
+        <p class="helper">Gebruik dit alleen voor diepe velden. Voor normaal zoeken werkt <code>Keyword</code> beter.</p>
+        <label>
+          JSON Path
+          <input id="json_path" type="text" list="json-paths" placeholder="Bijv. BillingCity of Parent.ChildField" />
+          <datalist id="json-paths"></datalist>
+        </label>
+        <label>
+          JSON Value
+          <input id="json_value" type="text" placeholder="Waarde van dat veld" />
+        </label>
+        <label>
+          JSON Match
+          <select id="json_op">
+            <option value="eq">Exact</option>
+            <option value="contains">Contains</option>
+          </select>
+        </label>
+      </details>
+      <label>
+        Type
+        <select id="type">
+          <option value="">Any</option>
+        </select>
+      </label>
+      <label>
+        Status
+        <select id="status">
+          <option value="">Any</option>
+        </select>
+      </label>
+      <label>
+        Country
+        <select id="country">
+          <option value="">Any</option>
+        </select>
+      </label>
+      <label>
+        Active
+        <select id="active">
+          <option value="">Any</option>
+          <option value="true">Active only</option>
+          <option value="false">Inactive only</option>
+        </select>
+      </label>
+      <label>
+        Sort
+        <select id="sort">
+          <option value="">Modified (newest)</option>
+          <option value="modified_asc">Modified (oldest)</option>
+          <option value="name_asc">Name (A-Z)</option>
+          <option value="name_desc">Name (Z-A)</option>
+          <option value="city_asc">City (A-Z)</option>
+          <option value="city_desc">City (Z-A)</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button id="apply">Apply</button>
+        <button id="reset" class="ghost">Reset</button>
+      </div>
+      <label class="inline-toggle">
+        <input id="unique_ids" type="checkbox" />
+        Unieke IDs (nieuwste per ID)
+      </label>
+      <div class="quick-row">
+        <button id="quick-all" class="chip ghost" type="button">All</button>
+        <button id="quick-active" class="chip ghost" type="button">Active</button>
+        <button id="quick-inactive" class="chip ghost" type="button">Inactive</button>
+        <button id="quick-clear-json" class="chip ghost" type="button">Clear JSON</button>
+      </div>
+    </aside>
+
+    <section class="content">
+      <div class="stats-grid">
+        <article class="panel stat">
+          <h3>Total Rows</h3>
+          <p id="stat-total">-</p>
+        </article>
+        <article class="panel stat">
+          <h3>Active Rows</h3>
+          <p id="stat-active">-</p>
+        </article>
+        <article class="panel stat">
+          <h3>Inactive Rows</h3>
+          <p id="stat-inactive">-</p>
+        </article>
+        <article class="panel stat">
+          <h3>Latest Modified</h3>
+          <p id="stat-latest">-</p>
+        </article>
+      </div>
+
+      <article class="panel table-panel">
+        <div class="table-head">
+          <h2>Results</h2>
+          <div class="table-tools">
+            <label class="inline-select">
+              Rows
+              <select id="limit">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+              </select>
+            </label>
+            <div id="result-meta">Loading...</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Row</th>
+                <th>ID</th>
+                <th data-sort="name_asc" class="sortable">Name</th>
+                <th>Phone</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th data-sort="city_asc" class="sortable">City</th>
+                <th>Country</th>
+                <th data-sort="modified_asc" class="sortable">Modified</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="prev" class="ghost">Prev</button>
+          <span id="page-indicator">Page 1</span>
+          <button id="next" class="ghost">Next</button>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <dialog id="detail-dialog">
+    <form method="dialog" class="dialog-head">
+      <h3 id="detail-title">Record</h3>
+      <button class="ghost">Close</button>
+    </form>
+    <div class="detail-tabs">
+      <button id="tab-comm" type="button" class="ghost mini">Communicatie</button>
+      <button id="tab-flash" type="button" class="ghost mini" style="display:none">Opmerkingen</button>
+      <button id="tab-json" type="button" class="ghost mini">Raw JSON</button>
+      <label class="inline-select" id="comm-filter-wrap">
+        Kanaal
+        <select id="comm-filter">
+          <option value="all">Alles</option>
+          <option value="email">Email</option>
+          <option value="sms">SMS</option>
+          <option value="call">Call</option>
+          <option value="other">Other</option>
+        </select>
+      </label>
+    </div>
+    <div id="comm-empty" class="helper" style="display:none">Geen SObjectLog communicatie gevonden voor dit record.</div>
+    <div id="comm-timeline"></div>
+    <div id="flash-empty" class="helper" style="display:none">Geen opmerkingen gevonden voor dit record.</div>
+    <pre id="flash-message" style="display:none"></pre>
+    <pre id="detail-json" style="display:none"></pre>
+  </dialog>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
