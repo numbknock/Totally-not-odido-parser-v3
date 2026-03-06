@@ -23,6 +23,26 @@ Daarna open je:
 - `http://localhost:8080/` (zoekscherm)
 - `http://localhost:8080/analytics` (analyses)
 
+## Docker
+
+Image bouwen:
+
+```bash
+docker build -t totally-not-odido-parser-v2:latest .
+```
+
+Multi-arch build (AMD64 + ARM64) met Buildx:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t totally-not-odido-parser-v2:latest .
+```
+
+Container starten (dataset/db uit host map):
+
+```bash
+docker run --rm -p 8080:8080 -v "$(pwd):/data" totally-not-odido-parser-v2:latest
+```
+
 ## Wat doet de app?
 
 - Leest regels uit `dataset.txt`.
