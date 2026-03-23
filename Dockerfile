@@ -10,14 +10,14 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY static ./static
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o /out/totally-not-odido-parser-v2 ./cmd/server
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o /out/totally-not-odido-parser-v3 ./cmd/server
 
 FROM alpine:3.20
 WORKDIR /app
 
 RUN addgroup -S app && adduser -S -G app app
 
-COPY --from=builder /out/totally-not-odido-parser-v2 /app/totally-not-odido-parser-v2
+COPY --from=builder /out/totally-not-odido-parser-v3 /app/totally-not-odido-parser-v3
 COPY static /app/static
 
 USER app
