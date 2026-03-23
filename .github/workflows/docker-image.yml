@@ -39,5 +39,5 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/${{ env.OWNER_LC }}/totally-not-odido-parser-v2:latest
-            ghcr.io/${{ env.OWNER_LC }}/totally-not-odido-parser-v2:${{ github.sha }}
+            ghcr.io/${{ env.OWNER_LC }}/totally-not-odido-parser-v3:latest
+            ghcr.io/${{ env.OWNER_LC }}/totally-not-odido-parser-v3:${{ github.sha }}
