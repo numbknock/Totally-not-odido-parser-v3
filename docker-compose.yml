@@ -36,13 +36,21 @@ services:
       DB_NAME: odido_parser
     # Pass database parameters to the application
     command:
-      - "-addr=:8080"
-      - "-dataset=/data/dataset.txt"
-      - "-db-host=postgres"
-      - "-db-port=5432"
-      - "-db-user=postgres"
-      - "-db-password=postgres"
-      - "-db-name=odido_parser"
+      - "/app/totally-not-odido-parser-v3"
+      - "-addr"
+      - ":8080"
+      - "-dataset"
+      - "/data/dataset.txt"
+      - "-db-host"
+      - "postgres"
+      - "-db-port"
+      - "5432"
+      - "-db-user"
+      - "postgres"
+      - "-db-password"
+      - "postgres"
+      - "-db-name"
+      - "odido_parser"
       - "-fast-index=true"
       - "-fts-broad=true"
     depends_on:

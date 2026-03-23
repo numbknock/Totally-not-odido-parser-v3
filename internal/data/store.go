@@ -998,8 +998,8 @@ func (s *Store) isIndexCurrent(ctx context.Context) (bool, error) {
 	var exists int
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(1)
-		FROM sqlite_master
-		WHERE type='table' AND name='metadata'`).Scan(&exists); err != nil {
+		FROM information_schema.tables
+		WHERE table_schema = 'public' AND table_name = 'metadata'`).Scan(&exists); err != nil {
 		return false, err
 	}
 	if exists == 0 {
@@ -1037,8 +1037,8 @@ func (s *Store) isIndexCurrent(ctx context.Context) (bool, error) {
 	var recordsTable int
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(1)
-		FROM sqlite_master
-		WHERE type='table' AND name='records'`).Scan(&recordsTable); err != nil {
+		FROM information_schema.tables
+		WHERE table_schema = 'public' AND table_name = 'records'`).Scan(&recordsTable); err != nil {
 		return false, err
 	}
 	return recordsTable == 1, nil
@@ -1048,8 +1048,8 @@ func (s *Store) metadataTableExists(ctx context.Context) (bool, error) {
 	var exists int
 	if err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(1)
-		FROM sqlite_master
-		WHERE type='table' AND name='metadata'`).Scan(&exists); err != nil {
+		FROM information_schema.tables
+		WHERE table_schema = 'public' AND table_name = 'metadata'`).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists == 1, nil
