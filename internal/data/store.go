@@ -444,32 +444,32 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 		}
 	}
 
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM records`).Scan(&out.TotalRows); err != nil {
+	if err := s.queryRowContext(ctx, `SELECT COUNT(1) FROM records`).Scan(&out.TotalRows); err != nil {
 		return Stats{}, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM records WHERE is_active = 1`).Scan(&out.ActiveRows); err != nil {
+	if err := s.queryRowContext(ctx, `SELECT COUNT(1) FROM records WHERE is_active = 1`).Scan(&out.ActiveRows); err != nil {
 		return Stats{}, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM records WHERE is_active = 0`).Scan(&out.InactiveRows); err != nil {
+	if err := s.queryRowContext(ctx, `SELECT COUNT(1) FROM records WHERE is_active = 0`).Scan(&out.InactiveRows); err != nil {
 		return Stats{}, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM records WHERE is_deleted = 1`).Scan(&out.DeletedRows); err != nil {
+	if err := s.queryRowContext(ctx, `SELECT COUNT(1) FROM records WHERE is_deleted = 1`).Scan(&out.DeletedRows); err != nil {
 		return Stats{}, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(NULLIF(modified_date, '')), '') FROM records`).Scan(&out.LastModifiedAt); err != nil {
+	if err := s.queryRowContext(ctx, `SELECT COALESCE(MAX(NULLIF(modified_date, '')), '') FROM records`).Scan(&out.LastModifiedAt); err != nil {
 		return Stats{}, err
 	}
 	// Cache lightweight stats for faster UI health during heavy background indexing.
-	_, _ = s.db.ExecContext(ctx, `
+	_, _ = s.execContext(ctx, `
 		INSERT INTO metadata(key, value) VALUES('cached_total_rows', ?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.FormatInt(out.TotalRows, 10))
-	_, _ = s.db.ExecContext(ctx, `
+	_, _ = s.execContext(ctx, `
 		INSERT INTO metadata(key, value) VALUES('cached_active_rows', ?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.FormatInt(out.ActiveRows, 10))
-	_, _ = s.db.ExecContext(ctx, `
+	_, _ = s.execContext(ctx, `
 		INSERT INTO metadata(key, value) VALUES('cached_inactive_rows', ?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.FormatInt(out.InactiveRows, 10))
-	_, _ = s.db.ExecContext(ctx, `
+	_, _ = s.execContext(ctx, `
 		INSERT INTO metadata(key, value) VALUES('cached_last_modified_at', ?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, out.LastModifiedAt)
 
@@ -643,12 +643,12 @@ func (s *Store) QueryRecords(ctx context.Context, params QueryParams) (QueryResu
 	}
 
 	var total int64
-	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := s.queryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
 		return QueryResult{}, err
 	}
 
 	queryArgs := append(append(make([]any, 0, len(args)+2), args...), params.Limit, params.Offset)
-	rows, err := s.db.QueryContext(ctx, querySQL, queryArgs...)
+	rows, err := s.queryContext(ctx, querySQL, queryArgs...)
 	if err != nil {
 		return QueryResult{}, err
 	}
@@ -702,7 +702,7 @@ func (s *Store) QueryRecords(ctx context.Context, params QueryParams) (QueryResu
 func (s *Store) RecordJSON(ctx context.Context, rowNum int64) (json.RawMessage, error) {
 	var offset int64
 	var lineLen int64
-	err := s.db.QueryRowContext(ctx, `SELECT file_offset, line_length FROM records WHERE row_num = ?`, rowNum).
+	err := s.queryRowContext(ctx, `SELECT file_offset, line_length FROM records WHERE row_num = ?`, rowNum).
 		Scan(&offset, &lineLen)
 	if err != nil {
 		return nil, err
@@ -758,7 +758,7 @@ func (s *Store) RowsHasFlashMessage(ctx context.Context, rowNums []int64) (map[i
 	}
 
 	query := `SELECT row_num, has_flash_message FROM records WHERE row_num IN (` + strings.Join(placeholders, ",") + `)`
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryContext(ctx, query, args...)
 	if err != nil {
 		// Backward compatibility for older indexes without the column.
 		if strings.Contains(strings.ToLower(err.Error()), "no such column") {
@@ -818,7 +818,7 @@ func (s *Store) RowsBestPhone(ctx context.Context, rowNums []int64) (map[int64]s
 	}
 
 	query := `SELECT row_num, COALESCE(phone, ''), file_offset, line_length FROM records WHERE row_num IN (` + strings.Join(placeholders, ",") + `)`
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -911,7 +911,7 @@ func (s *Store) rowsHasNonEmptyJSONField(ctx context.Context, rowNums []int64, f
 	}
 
 	query := `SELECT row_num, file_offset, line_length FROM records WHERE row_num IN (` + strings.Join(placeholders, ",") + `)`
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -992,6 +992,34 @@ func applyRuntimePragmas(db *sql.DB) error {
 func applyIndexingPragmas(db *sql.DB, fast bool) error {
 	// PostgreSQL doesn't use pragmas like SQLite; this is a no-op for compatibility
 	return nil
+}
+
+func postgresPlaceholders(query string) string {
+	var b strings.Builder
+	b.Grow(len(query) + 16)
+	n := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			b.WriteByte('$')
+			b.WriteString(strconv.Itoa(n))
+			n++
+		} else {
+			b.WriteByte(query[i])
+		}
+	}
+	return b.String()
+}
+
+func (s *Store) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, postgresPlaceholders(query), args...)
+}
+
+func (s *Store) queryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return s.db.QueryRowContext(ctx, postgresPlaceholders(query), args...)
+}
+
+func (s *Store) queryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, postgresPlaceholders(query), args...)
 }
 
 func (s *Store) isIndexCurrent(ctx context.Context) (bool, error) {
@@ -1114,10 +1142,10 @@ func (s *Store) readResumeCheckpoint(ctx context.Context, fileInfo os.FileInfo, 
 }
 
 func upsertMetadataTx(ctx context.Context, tx *sql.Tx, key, value string) error {
-	_, err := tx.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, postgresPlaceholders(`
 		INSERT INTO metadata(key, value) VALUES(?, ?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value
-	`, key, value)
+	`), key, value)
 	return err
 }
 
@@ -1813,7 +1841,7 @@ readLoop:
 
 func (s *Store) metaValue(ctx context.Context, key string) (string, error) {
 	var value string
-	if err := s.db.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key = ?`, key).Scan(&value); err != nil {
+	if err := s.queryRowContext(ctx, `SELECT value FROM metadata WHERE key = ?`, key).Scan(&value); err != nil {
 		return "", err
 	}
 	return value, nil
@@ -1838,7 +1866,7 @@ func (s *Store) topCounts(ctx context.Context, field string, limit int) ([]Count
 		ORDER BY count DESC, value ASC
 		LIMIT ?`, column, column, column)
 
-	rows, err := s.db.QueryContext(ctx, query, limit)
+	rows, err := s.queryContext(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1874,7 +1902,7 @@ func (s *Store) distinctValues(ctx context.Context, field string, limit int) ([]
 		ORDER BY COUNT(1) DESC, value ASC
 		LIMIT ?`, column, column, column)
 
-	rows, err := s.db.QueryContext(ctx, query, limit)
+	rows, err := s.queryContext(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1899,7 +1927,7 @@ func (s *Store) JSONPaths(ctx context.Context, limit int) ([]string, error) {
 		limit = 2000
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.queryContext(ctx, `
 		SELECT path
 		FROM record_json_fields
 		GROUP BY path
@@ -1975,7 +2003,7 @@ func (s *Store) AnalyticsDistribution(ctx context.Context, field, filter string,
 		whereSQL,
 	)
 	var matchedRows int64
-	if err := s.db.QueryRowContext(ctx, matchedSQL, filterArgs...).Scan(&matchedRows); err != nil {
+	if err := s.queryRowContext(ctx, matchedSQL, filterArgs...).Scan(&matchedRows); err != nil {
 		return AnalyticsDistribution{}, err
 	}
 
@@ -1985,7 +2013,7 @@ func (s *Store) AnalyticsDistribution(ctx context.Context, field, filter string,
 		whereSQL,
 	)
 	var distinctCount int64
-	if err := s.db.QueryRowContext(ctx, distinctSQL, filterArgs...).Scan(&distinctCount); err != nil {
+	if err := s.queryRowContext(ctx, distinctSQL, filterArgs...).Scan(&distinctCount); err != nil {
 		return AnalyticsDistribution{}, err
 	}
 
@@ -1997,7 +2025,7 @@ func (s *Store) AnalyticsDistribution(ctx context.Context, field, filter string,
 		ORDER BY count DESC, value ASC
 		LIMIT ?`, sourceSQL, whereSQL)
 	args := append(append(make([]any, 0, len(filterArgs)+1), filterArgs...), limit)
-	rows, err := s.db.QueryContext(ctx, distributionSQL, args...)
+	rows, err := s.queryContext(ctx, distributionSQL, args...)
 	if err != nil {
 		return AnalyticsDistribution{}, err
 	}
@@ -2042,7 +2070,7 @@ func (s *Store) AnalyticsCount(ctx context.Context, field, value string) (Analyt
 	)
 
 	var count int64
-	if err := s.db.QueryRowContext(ctx, query, value).Scan(&count); err != nil {
+	if err := s.queryRowContext(ctx, query, value).Scan(&count); err != nil {
 		return AnalyticsCountResult{}, err
 	}
 	return AnalyticsCountResult{
@@ -2067,11 +2095,12 @@ func (s *Store) analyticsFieldSpec(ctx context.Context, field string) (analytics
 }
 
 func (s *Store) analyticsFieldSpecs(ctx context.Context) ([]analyticsFieldSpec, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT name
-		FROM pragma_table_info('records')
-		WHERE name NOT IN ('row_num', 'file_offset', 'line_length')
-		ORDER BY name`)
+	rows, err := s.queryContext(ctx, `
+		SELECT column_name as name
+		FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'records'
+		AND column_name NOT IN ('row_num', 'file_offset', 'line_length')
+		ORDER BY column_name`)
 	if err != nil {
 		return nil, err
 	}
