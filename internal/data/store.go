@@ -1346,7 +1346,7 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 			billing_city, billing_state, billing_country, postal_code,
 			created_date, modified_date, is_active, is_deleted,
 			file_offset, line_length
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
 
 	type parseTask struct {
 		RowNum     int64
@@ -1564,11 +1564,12 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 				if i > 0 {
 					sqlBuilder.WriteString(",")
 				}
-				sqlBuilder.WriteString("(?, ?, ?, ?)")
+				// PostgreSQL numbered placeholders: $1, $2, $3, $4 for each row
+				sqlBuilder.WriteString(fmt.Sprintf("($%d, $%d, $%d, $%d)", i*4+1, i*4+2, i*4+3, i*4+4))
 				args = append(args, item.RowNum, item.Path, item.ValueText, item.ValueType)
 			}
 
-			_, err := tx.ExecContext(ingestCtx, postgresPlaceholders(sqlBuilder.String()), args...)
+			_, err := tx.ExecContext(ingestCtx, sqlBuilder.String(), args...)
 			if err != nil {
 				fmt.Printf("index: bulk insert failed: %v\nSQL: %s\n", err, postgresPlaceholders(sqlBuilder.String()))
 				return err
