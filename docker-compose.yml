@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: odido-parser-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: odido_parser
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   app:
     # Prebuilt image published from this repository's GitHub Actions workflow.
     image: ghcr.io/darkqwertyhunter/totally-not-odido-parser-v2:latest
@@ -6,8 +24,32 @@ services:
     # Expose the web UI and API on http://localhost:8080.
     ports:
       - "8080:8080"
-    # Mount current folder into /data so dataset.txt and dataset.sqlite persist on host.
+    # Mount current folder into /data so dataset.txt persists on host.
     volumes:
       - ./:/data
+    # Database connection environment variables
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: odido_parser
+    # Pass database parameters to the application
+    command:
+      - "-addr=:8080"
+      - "-dataset=/data/dataset.txt"
+      - "-db-host=postgres"
+      - "-db-port=5432"
+      - "-db-user=postgres"
+      - "-db-password=postgres"
+      - "-db-name=odido_parser"
+      - "-fast-index=true"
+      - "-fts-broad=true"
+    depends_on:
+      postgres:
+        condition: service_healthy
     # Restart automatically unless manually stopped.
     restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/lib/pq"
 )
 
 const indexVersion = "8"
@@ -223,18 +223,19 @@ type indexConfig struct {
 	FTSBroad             bool
 }
 
-func NewStore(datasetPath, dbPath string, fastIndex, ftsBroad bool) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath)
+func NewStore(datasetPath, dbConnStr string, fastIndex, ftsBroad bool) (*Store, error) {
+	db, err := sql.Open("postgres", dbConnStr)
 	if err != nil {
 		return nil, err
 	}
-	// Allow concurrent reads so independent endpoints (health/stats/facets/query)
-	// don't block each other behind a single SQLite connection.
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(4)
+	// PostgreSQL can handle much higher concurrent connections than SQLite
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(time.Minute * 5)
 
-	if err := applyRuntimePragmas(db); err != nil {
-		return nil, err
+	// Test the connection
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
 	file, err := os.Open(datasetPath)
@@ -334,7 +335,7 @@ func (s *Store) EnsureIndex(ctx context.Context) error {
 func (s *Store) EnsureTables(ctx context.Context) error {
 	schemaSQL := `
 		CREATE TABLE IF NOT EXISTS records (
-			row_num INTEGER PRIMARY KEY,
+			row_num BIGSERIAL PRIMARY KEY,
 			id TEXT,
 			name TEXT,
 			email TEXT,
@@ -354,24 +355,12 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 			modified_date TEXT,
 			is_active INTEGER NOT NULL,
 			is_deleted INTEGER NOT NULL,
-			file_offset INTEGER NOT NULL,
-			line_length INTEGER NOT NULL
-		);
-
-		CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
-			id,
-			name,
-			email,
-			search_blob,
-			billing_city,
-			type,
-			status,
-			billing_country,
-			tokenize = 'unicode61'
+			file_offset BIGINT NOT NULL,
+			line_length BIGINT NOT NULL
 		);
 
 		CREATE TABLE IF NOT EXISTS record_json_fields (
-			row_num INTEGER NOT NULL,
+			row_num BIGINT NOT NULL,
 			path TEXT NOT NULL,
 			value_text TEXT NOT NULL,
 			value_type TEXT NOT NULL
@@ -410,10 +399,8 @@ func (s *Store) Health(ctx context.Context) (Health, error) {
 	}
 
 	indexedAt, _ := s.metaValue(ctx, "indexed_at")
-	var dbPath string
-	if err := s.db.QueryRowContext(ctx, `PRAGMA database_list`).Scan(new(int), new(string), &dbPath); err != nil {
-		dbPath = "unknown"
-	}
+	// PostgreSQL doesn't use file paths like SQLite; return connection info
+	dbPath := "postgresql://localhost/dataset"
 	st := s.IndexStatus()
 
 	return Health{
@@ -586,26 +573,15 @@ func (s *Store) QueryRecords(ctx context.Context, params QueryParams) (QueryResu
 
 	queryText := strings.TrimSpace(params.Q)
 	if queryText != "" {
-		if requiresLiteralSearch(queryText) {
-			if ftsExpr := buildFTSExpr(queryText); ftsExpr != "" {
-				whereParts = append(whereParts, "r.row_num IN (SELECT rowid FROM records_fts WHERE records_fts MATCH ?)")
-				args = append(args, ftsExpr)
-			}
-			needle := "%" + strings.ToLower(queryText) + "%"
-			whereParts = append(whereParts, `(
-				LOWER(COALESCE(r.id, '')) LIKE ? OR
-				LOWER(COALESCE(r.name, '')) LIKE ? OR
-				LOWER(COALESCE(r.email, '')) LIKE ? OR
-				LOWER(COALESCE(r.search_blob, '')) LIKE ?
-			)`)
-			args = append(args, needle, needle, needle, needle)
-		} else {
-			ftsExpr := buildFTSExpr(queryText)
-			if ftsExpr != "" {
-				whereParts = append(whereParts, "r.row_num IN (SELECT rowid FROM records_fts WHERE records_fts MATCH ?)")
-				args = append(args, ftsExpr)
-			}
-		}
+		// PostgreSQL: Use ILIKE for case-insensitive searches instead of FTS
+		needle := "%" + queryText + "%"
+		whereParts = append(whereParts, `(
+			COALESCE(r.id, '') ILIKE ? OR
+			COALESCE(r.name, '') ILIKE ? OR
+			COALESCE(r.email, '') ILIKE ? OR
+			COALESCE(r.search_blob, '') ILIKE ?
+		)`)
+		args = append(args, needle, needle, needle, needle)
 	}
 
 	whereSQL := strings.Join(whereParts, " AND ")
@@ -1009,44 +985,12 @@ func pickFirstPhone(doc map[string]any) string {
 }
 
 func applyRuntimePragmas(db *sql.DB) error {
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL;",
-		"PRAGMA synchronous=NORMAL;",
-		"PRAGMA locking_mode=NORMAL;",
-		"PRAGMA busy_timeout=10000;",
-		"PRAGMA temp_store=MEMORY;",
-		"PRAGMA cache_size=-200000;",
-		"PRAGMA mmap_size=30000000000;",
-	}
-
-	for _, stmt := range pragmas {
-		if _, err := db.Exec(stmt); err != nil {
-			return err
-		}
-	}
+	// PostgreSQL doesn't use pragmas like SQLite; this is a no-op for compatibility
 	return nil
 }
 
 func applyIndexingPragmas(db *sql.DB, fast bool) error {
-	if !fast {
-		return applyRuntimePragmas(db)
-	}
-
-	pragmas := []string{
-		"PRAGMA journal_mode=OFF;",
-		"PRAGMA synchronous=OFF;",
-		"PRAGMA locking_mode=NORMAL;",
-		"PRAGMA busy_timeout=10000;",
-		"PRAGMA temp_store=MEMORY;",
-		"PRAGMA cache_size=-800000;",
-		"PRAGMA mmap_size=30000000000;",
-	}
-
-	for _, stmt := range pragmas {
-		if _, err := db.Exec(stmt); err != nil {
-			return err
-		}
-	}
+	// PostgreSQL doesn't use pragmas like SQLite; this is a no-op for compatibility
 	return nil
 }
 
@@ -1237,13 +1181,12 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 		fmt.Printf("resume checkpoint found: row=%d offset=%d\n", resumeFromRow, resumeFromOffset)
 	} else {
 		schemaSQL := `
-			DROP TABLE IF EXISTS records;
-			DROP TABLE IF EXISTS records_fts;
+			DROP TABLE IF EXISTS records CASCADE;
 			DROP TABLE IF EXISTS record_json_fields;
 			DROP TABLE IF EXISTS metadata;
 
 			CREATE TABLE records (
-				row_num INTEGER PRIMARY KEY,
+				row_num BIGSERIAL PRIMARY KEY,
 				id TEXT,
 				name TEXT,
 				email TEXT,
@@ -1263,24 +1206,12 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 				modified_date TEXT,
 				is_active INTEGER NOT NULL,
 				is_deleted INTEGER NOT NULL,
-				file_offset INTEGER NOT NULL,
-				line_length INTEGER NOT NULL
-			);
-
-			CREATE VIRTUAL TABLE records_fts USING fts5(
-				id,
-				name,
-				email,
-				search_blob,
-				billing_city,
-				type,
-				status,
-				billing_country,
-				tokenize = 'unicode61'
+				file_offset BIGINT NOT NULL,
+				line_length BIGINT NOT NULL
 			);
 
 			CREATE TABLE record_json_fields (
-				row_num INTEGER NOT NULL,
+				row_num BIGINT NOT NULL,
 				path TEXT NOT NULL,
 				value_text TEXT NOT NULL,
 				value_type TEXT NOT NULL
@@ -1553,42 +1484,17 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 			outcomes <- writeOutcome{Err: err}
 			return
 		}
-		var ftsStmt *sql.Stmt
-		if cfg.CommitBatchRows > 0 {
-			ftsStmt, err = tx.PrepareContext(ingestCtx, `
-				INSERT INTO records_fts(rowid, id, name, email, search_blob, billing_city, type, status, billing_country)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-			if err != nil {
-				outcomes <- writeOutcome{Err: err}
-				return
-			}
-		}
+		// FTS is not used with PostgreSQL - removed for compatibility
 		pendingJSONFields := make([]jsonFieldWrite, 0, cfg.JSONFieldInsertBatch*2)
 
 		closeStmts := func() error {
-			if err := recStmt.Close(); err != nil {
-				return err
-			}
-			if ftsStmt != nil {
-				if err := ftsStmt.Close(); err != nil {
-					return err
-				}
-			}
-			return nil
+			return recStmt.Close()
 		}
 		reopenStmts := func() error {
 			var prepareErr error
 			recStmt, prepareErr = tx.PrepareContext(ingestCtx, insertRecordSQL)
 			if prepareErr != nil {
 				return prepareErr
-			}
-			if cfg.CommitBatchRows > 0 {
-				ftsStmt, prepareErr = tx.PrepareContext(ingestCtx, `
-					INSERT INTO records_fts(rowid, id, name, email, search_blob, billing_city, type, status, billing_country)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-				if prepareErr != nil {
-					return prepareErr
-				}
 			}
 			return nil
 		}
@@ -1671,22 +1577,7 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 					return err
 				}
 
-				if ftsStmt != nil {
-					if _, err := ftsStmt.ExecContext(
-						ingestCtx,
-						res.RowNum,
-						res.Src.ID,
-						res.Src.Name,
-						res.Src.Email,
-						res.Src.SearchBlob,
-						res.Src.BillingCity,
-						res.Src.Type,
-						res.Src.Status,
-						res.Src.BillingCountry,
-					); err != nil {
-						return err
-					}
-				}
+				// FTS insert removed - PostgreSQL uses ILIKE instead
 
 				if cfg.IndexJSONFields {
 					for _, field := range res.Fields {
@@ -1855,15 +1746,7 @@ readLoop:
 		st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	})
 
-	// In fast (single transaction) mode we bulk-load FTS at the end for throughput.
-	if cfg.CommitBatchRows <= 0 {
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT INTO records_fts(rowid, id, name, email, search_blob, billing_city, type, status, billing_country)
-			SELECT row_num, id, name, email, search_blob, billing_city, type, status, billing_country
-			FROM records`); err != nil {
-			return err
-		}
-	}
+	// FTS is not used with PostgreSQL - uses ILIKE instead
 
 	indexSQL := `
 		CREATE INDEX idx_records_id ON records(id);

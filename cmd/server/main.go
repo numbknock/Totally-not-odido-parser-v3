@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -31,8 +32,12 @@ func main() {
 	var (
 		addr        = flag.String("addr", ":8080", "HTTP listen address")
 		datasetPath = flag.String("dataset", "dataset.txt", "path to dataset.txt JSONL file")
-		dbPath      = flag.String("db", "dataset.sqlite", "path to SQLite index file")
-		fastIndex   = flag.Bool("fast-index", true, "enable aggressive SQLite tuning for faster index build")
+		dbHost      = flag.String("db-host", "localhost", "PostgreSQL database host")
+		dbPort      = flag.String("db-port", "5432", "PostgreSQL database port")
+		dbUser      = flag.String("db-user", "postgres", "PostgreSQL database user")
+		dbPass      = flag.String("db-password", "", "PostgreSQL database password")
+		dbName      = flag.String("db-name", "odido_parser", "PostgreSQL database name")
+		fastIndex   = flag.Bool("fast-index", true, "enable aggressive tuning for faster index build")
 		ftsBroad    = flag.Bool("fts-broad", true, "index a broader set of keyword-relevant fields for full-text search")
 	)
 	flag.Parse()
@@ -43,16 +48,14 @@ func main() {
 	if _, err := os.Stat(*datasetPath); err != nil {
 		log.Fatalf("dataset missing: %v", err)
 	}
-	dbExists := true
-	if _, err := os.Stat(*dbPath); err != nil {
-		if os.IsNotExist(err) {
-			dbExists = false
-		} else {
-			log.Fatalf("failed to stat db file: %v", err)
-		}
-	}
 
-	store, err := data.NewStore(*datasetPath, *dbPath, true, *ftsBroad)
+	// Build PostgreSQL connection string
+	dbConnStr := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		*dbHost, *dbPort, *dbUser, *dbPass, *dbName,
+	)
+
+	store, err := data.NewStore(*datasetPath, dbConnStr, true, *ftsBroad)
 	if err != nil {
 		log.Fatalf("failed to open store: %v", err)
 	}
@@ -86,17 +89,13 @@ func main() {
 	}
 
 	log.Printf("dataset: %s", *datasetPath)
-	log.Printf("db: %s", *dbPath)
-	if dbExists {
-		log.Printf("startup: existing sqlite db found")
-	} else {
-		log.Printf("startup: sqlite db not found, starting fresh index build")
-		log.Printf("startup: step=init_schema begin")
-		if err := store.EnsureTables(ctx); err != nil {
-			log.Fatalf("startup: failed to initialize schema: %v", err)
-		}
-		log.Printf("startup: step=init_schema done")
+	log.Printf("database: %s (host=%s port=%s user=%s dbname=%s)", *dbHost, *dbHost, *dbPort, *dbUser, *dbName)
+	log.Printf("startup: PostgreSQL database configured")
+	log.Printf("startup: step=init_schema begin")
+	if err := store.EnsureTables(ctx); err != nil {
+		log.Fatalf("startup: failed to initialize schema: %v", err)
 	}
+	log.Printf("startup: step=init_schema done")
 	log.Printf("listening on http://localhost%s", *addr)
 	log.Printf("web: http://localhost%s", *addr)
 
