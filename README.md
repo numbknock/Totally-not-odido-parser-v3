@@ -7,6 +7,11 @@ Je start 1 commando, de webapp komt direct online, en de data wordt op de achter
 
 ## Belangrijk om te weten
 
+> 🚨 **Vibe code alert:** deze fork is aangepast naar Postgres backend en multi-arch Docker build; als je nog met `dataset.sqlite` werkt, check dan eerst de nieuwe postgres flags in `cmd/server/main.go`.
+> 
+> - `-db-host`, `-db-port`, `-db-user`, `-db-password`, `-db-name`
+> - oude `-db dataset.sqlite` mode wordt vervangen door de nieuwe workflow
+
 - De webinterface is meteen beschikbaar op `http://localhost:8080`.
 - Ook tijdens de **eerste ingest** kun je al zoeken en records bekijken.
 - Hoe langer ingest/indexeren loopt, hoe completer en sneller de resultaten worden.

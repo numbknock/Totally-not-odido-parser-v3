@@ -10,6 +10,9 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY static ./static
 
+# Ensure the postgres driver dependency is present for cross-arch build
+RUN go get github.com/lib/pq@v1.10.9
+
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o /out/totally-not-odido-parser-v3 ./cmd/server
 
 FROM alpine:3.20

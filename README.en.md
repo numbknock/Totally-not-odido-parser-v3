@@ -7,6 +7,11 @@ Run one command, the web app comes online immediately, and data is ingested/inde
 
 ## What matters most
 
+> 🚨 **Vibe code alert:** this fork is now PostgreSQL + multi-arch Docker focused; if you are still using `dataset.sqlite` mode, make sure to use the new flags in `cmd/server/main.go`.
+> 
+> - `-db-host`, `-db-port`, `-db-user`, `-db-password`, `-db-name`
+> - old `-db dataset.sqlite` mode is legacy
+
 - The web interface is available right away at `http://localhost:8080`.
 - You can already search and view records during the **first ingest**.
 - Results become more complete and faster as ingest/indexing progresses.
