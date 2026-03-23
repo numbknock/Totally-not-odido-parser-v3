@@ -625,7 +625,7 @@ func (s *Store) QueryRecords(ctx context.Context, params QueryParams) (QueryResu
 				WHERE ` + whereSQL + `
 				GROUP BY CASE
 					WHEN COALESCE(r.id, '') <> '' THEN r.id
-					ELSE printf('row:%d', r.row_num)
+					ELSE 'row:' || r.row_num::text
 				END
 			) d ON d.row_num = r.row_num
 			ORDER BY ` + orderBy + `
@@ -1208,11 +1208,24 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 		}
 		fmt.Printf("resume checkpoint found: row=%d offset=%d\n", resumeFromRow, resumeFromOffset)
 	} else {
-		schemaSQL := `
-			DROP TABLE IF EXISTS records CASCADE;
-			DROP TABLE IF EXISTS record_json_fields;
-			DROP TABLE IF EXISTS metadata;
-
+		fmt.Printf("index: creating schema...\n")
+		
+		// Drop tables first
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS records CASCADE`); err != nil {
+			fmt.Printf("index: drop records table failed: %v\n", err)
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS record_json_fields`); err != nil {
+			fmt.Printf("index: drop record_json_fields table failed: %v\n", err)
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS metadata`); err != nil {
+			fmt.Printf("index: drop metadata table failed: %v\n", err)
+			return err
+		}
+		
+		// Create tables
+		recordsSQL := `
 			CREATE TABLE records (
 				row_num BIGSERIAL PRIMARY KEY,
 				id TEXT,
@@ -1236,23 +1249,35 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 				is_deleted INTEGER NOT NULL,
 				file_offset BIGINT NOT NULL,
 				line_length BIGINT NOT NULL
-			);
-
+			)`
+		if _, err := s.db.ExecContext(ctx, recordsSQL); err != nil {
+			fmt.Printf("index: create records table failed: %v\n", err)
+			return err
+		}
+		
+		jsonFieldsSQL := `
 			CREATE TABLE record_json_fields (
 				row_num BIGINT NOT NULL,
 				path TEXT NOT NULL,
 				value_text TEXT NOT NULL,
 				value_type TEXT NOT NULL
-			);
-
+			)`
+		if _, err := s.db.ExecContext(ctx, jsonFieldsSQL); err != nil {
+			fmt.Printf("index: create record_json_fields table failed: %v\n", err)
+			return err
+		}
+		
+		metadataSQL := `
 			CREATE TABLE metadata (
 				key TEXT PRIMARY KEY,
 				value TEXT NOT NULL
-			);
-		`
-		if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
+			)`
+		if _, err := s.db.ExecContext(ctx, metadataSQL); err != nil {
+			fmt.Printf("index: create metadata table failed: %v\n", err)
 			return err
 		}
+		
+		fmt.Printf("index: schema created successfully\n")
 	}
 	s.updateStatus(func(st *IndexStatus) {
 		st.Step = "ingest_rows"
@@ -1543,8 +1568,12 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 				args = append(args, item.RowNum, item.Path, item.ValueText, item.ValueType)
 			}
 
-			_, err := tx.ExecContext(ingestCtx, sqlBuilder.String(), args...)
-			return err
+			_, err := tx.ExecContext(ingestCtx, postgresPlaceholders(sqlBuilder.String()), args...)
+			if err != nil {
+				fmt.Printf("index: bulk insert failed: %v\nSQL: %s\n", err, postgresPlaceholders(sqlBuilder.String()))
+				return err
+			}
+			return nil
 		}
 		flushAllPendingJSONFields := func() error {
 			for len(pendingJSONFields) > 0 {
@@ -1776,24 +1805,33 @@ readLoop:
 
 	// FTS is not used with PostgreSQL - uses ILIKE instead
 
-	indexSQL := `
-		CREATE INDEX idx_records_id ON records(id);
-		CREATE INDEX idx_records_phone ON records(phone);
-		CREATE INDEX idx_records_haslog ON records(has_sobject_log);
-		CREATE INDEX idx_records_hasflash ON records(has_flash_message);
-		CREATE INDEX idx_records_type ON records(type);
-		CREATE INDEX idx_records_status ON records(status);
-		CREATE INDEX idx_records_country ON records(billing_country);
-		CREATE INDEX idx_records_city ON records(billing_city);
-		CREATE INDEX idx_records_modified ON records(modified_date);
-		CREATE INDEX idx_records_active ON records(is_active);
-		CREATE INDEX idx_json_fields_path_value ON record_json_fields(path, value_text);
-		CREATE INDEX idx_json_fields_value ON record_json_fields(value_text);
-		CREATE INDEX idx_json_fields_row ON record_json_fields(row_num);
-	`
-	if _, err := s.db.ExecContext(ctx, indexSQL); err != nil {
-		return err
+	fmt.Printf("index: creating indexes...\n")
+	
+	// Create indexes one by one
+	indexes := []string{
+		"CREATE INDEX idx_records_id ON records(id)",
+		"CREATE INDEX idx_records_phone ON records(phone)",
+		"CREATE INDEX idx_records_haslog ON records(has_sobject_log)",
+		"CREATE INDEX idx_records_hasflash ON records(has_flash_message)",
+		"CREATE INDEX idx_records_type ON records(type)",
+		"CREATE INDEX idx_records_status ON records(status)",
+		"CREATE INDEX idx_records_country ON records(billing_country)",
+		"CREATE INDEX idx_records_city ON records(billing_city)",
+		"CREATE INDEX idx_records_modified ON records(modified_date)",
+		"CREATE INDEX idx_records_active ON records(is_active)",
+		"CREATE INDEX idx_json_fields_path_value ON record_json_fields(path, value_text)",
+		"CREATE INDEX idx_json_fields_value ON record_json_fields(value_text)",
+		"CREATE INDEX idx_json_fields_row ON record_json_fields(row_num)",
 	}
+	
+	for _, indexSQL := range indexes {
+		if _, err := s.db.ExecContext(ctx, indexSQL); err != nil {
+			fmt.Printf("index: create index failed (%s): %v\n", indexSQL, err)
+			return err
+		}
+	}
+	
+	fmt.Printf("index: indexes created successfully\n")
 	s.updateStatus(func(st *IndexStatus) {
 		st.Step = "finalize"
 		st.Message = "writing metadata"
