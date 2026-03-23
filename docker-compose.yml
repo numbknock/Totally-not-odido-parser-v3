@@ -19,7 +19,7 @@ services:
 
   app:
     # Prebuilt image published from this repository's GitHub Actions workflow.
-    image: ghcr.io/darkqwertyhunter/totally-not-odido-parser-v2:latest
+    image: ghcr.io/numbknock/totally-not-odido-parser-v3:latest
     container_name: totally-not-odido-parser-v2
     # Expose the web UI and API on http://localhost:8080.
     ports:
