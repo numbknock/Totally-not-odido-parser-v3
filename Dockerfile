@@ -23,4 +23,4 @@ COPY static /app/static
 USER app
 EXPOSE 8080
 
-CMD ["/app/totally-not-odido-parser-v3", "-addr", ":8080", "-dataset", "/data/dataset.txt", "-db", "/data/dataset.sqlite"]
+CMD ["/app/totally-not-odido-parser-v3", "-addr", ":8080", "-dataset", "/data/dataset.txt", "-db-host", "postgres", "-db-port", "5432", "-db-user", "postgres", "-db-password", "postgres", "-db-name", "odido_parser"]
