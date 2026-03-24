@@ -334,6 +334,8 @@ func (s *Store) EnsureIndex(ctx context.Context) error {
 
 func (s *Store) EnsureTables(ctx context.Context) error {
 	schemaSQL := `
+		CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 		CREATE TABLE IF NOT EXISTS records (
 			row_num BIGSERIAL PRIMARY KEY,
 			id TEXT,
@@ -381,8 +383,10 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_records_city ON records(billing_city);
 		CREATE INDEX IF NOT EXISTS idx_records_modified ON records(modified_date);
 		CREATE INDEX IF NOT EXISTS idx_records_active ON records(is_active);
-		CREATE INDEX IF NOT EXISTS idx_json_fields_path_value ON record_json_fields(path, value_text);
-		CREATE INDEX IF NOT EXISTS idx_json_fields_value ON record_json_fields(value_text);
+		DROP INDEX IF EXISTS idx_json_fields_path_value;
+		CREATE INDEX IF NOT EXISTS idx_json_fields_path_value ON record_json_fields USING GIN (path gin_trgm_ops, value_text gin_trgm_ops);
+		DROP INDEX IF EXISTS idx_json_fields_value;
+		CREATE INDEX IF NOT EXISTS idx_json_fields_value ON record_json_fields USING GIN (value_text gin_trgm_ops);
 		CREATE INDEX IF NOT EXISTS idx_json_fields_row ON record_json_fields(row_num);
 	`
 	_, err := s.db.ExecContext(ctx, schemaSQL)
@@ -1820,8 +1824,8 @@ readLoop:
 		"CREATE INDEX idx_records_city ON records(billing_city)",
 		"CREATE INDEX idx_records_modified ON records(modified_date)",
 		"CREATE INDEX idx_records_active ON records(is_active)",
-		"CREATE INDEX idx_json_fields_path_value ON record_json_fields(path, value_text)",
-		"CREATE INDEX idx_json_fields_value ON record_json_fields(value_text)",
+		"CREATE INDEX idx_json_fields_path_value ON record_json_fields USING GIN (path gin_trgm_ops, value_text gin_trgm_ops)",
+		"CREATE INDEX idx_json_fields_value ON record_json_fields USING GIN (value_text gin_trgm_ops)",
 		"CREATE INDEX idx_json_fields_row ON record_json_fields(row_num)",
 	}
 	
