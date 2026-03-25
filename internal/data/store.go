@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	_ "github.com/lib/pq"
 )
@@ -28,6 +29,73 @@ const (
 	defaultProgressEvery        int64 = 50000
 	defaultJSONFieldInsertBatch       = 2048
 )
+
+// ensureValidUTF8 validates and sanitizes string data to ensure it's valid UTF-8.
+// Invalid UTF-8 sequences are replaced with the Unicode replacement character (U+FFFD).
+// Returns the sanitized string and a boolean indicating if the input was modified.
+func ensureValidUTF8(s string) (string, bool) {
+	if utf8.ValidString(s) {
+		return s, false
+	}
+	// Use RuneDecodeInString which automatically replaces invalid sequences with U+FFFD
+	var b strings.Builder
+	for i, r := range s {
+		if r == utf8.RuneError {
+			// This rune is invalid (utf8.RuneError represents a decoding error)
+			b.WriteRune(r) // Write replacement character
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String(), true
+}
+
+// validateDataBeforeInsert checks critical fields for UTF-8 validity.
+// Returns an error if any critical fields contain invalid UTF-8.
+func validateDataBeforeInsert(rowNum int64, id, name, email, phone, searchBlob string) error {
+	checks := map[string]string{
+		"id":           id,
+		"name":         name,
+		"email":        email,
+		"phone":        phone,
+		"search_blob":  searchBlob,
+	}
+	
+	for fieldName, value := range checks {
+		if !utf8.ValidString(value) {
+			// Find the invalid bytes for better error reporting
+			invalidPos := 0
+			for i := 0; i < len(value); i++ {
+				if value[i] > 0x7F { // Non-ASCII byte
+					r, size := utf8.DecodeRuneInString(value[i:])
+					if r == utf8.RuneError && size == 1 {
+						invalidPos = i
+						break
+					}
+				}
+			}
+			return fmt.Errorf("invalid UTF-8 in field '%s' at row %d (byte position ~%d): %v", 
+				fieldName, rowNum, invalidPos, value[max(0, invalidPos-5):min(len(value), invalidPos+5)])
+		}
+	}
+	return nil
+}
+
+// max returns the maximum of two integers
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 type Store struct {
 	db          *sql.DB
@@ -1575,8 +1643,16 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 
 			_, err := tx.ExecContext(ingestCtx, sqlBuilder.String(), args...)
 			if err != nil {
-				fmt.Printf("index: bulk insert failed: %v\nSQL: %s\n", err, postgresPlaceholders(sqlBuilder.String()))
-				return err
+				// Provide detailed context about which rows were being inserted
+				affectedRows := make([]int64, 0, len(chunk))
+				for _, item := range chunk {
+					affectedRows = append(affectedRows, item.RowNum)
+				}
+				fmt.Printf("index: bulk insert failed: %v\n", err)
+				fmt.Printf("  Affected rows: %v (count: %d)\n", affectedRows, len(chunk))
+				fmt.Printf("  Error likely related to invalid UTF-8 encoding in field values\n")
+				fmt.Printf("  SQL (first 500 chars): %s...\n", postgresPlaceholders(sqlBuilder.String())[:min(500, len(postgresPlaceholders(sqlBuilder.String())))])
+				return fmt.Errorf("bulk insert failed for %d JSON fields (rows %d-%d): %w", len(chunk), affectedRows[0], affectedRows[len(affectedRows)-1], err)
 			}
 			return nil
 		}
@@ -1611,6 +1687,18 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 			if res.ParseError {
 				parseErrors++
 			} else {
+				// Validate UTF-8 encoding before attempting database insert
+				if validationErr := validateDataBeforeInsert(
+					res.RowNum,
+					res.Src.ID,
+					res.Src.Name,
+					res.Src.Email,
+					res.Src.Phone,
+					res.Src.SearchBlob,
+				); validationErr != nil {
+					return fmt.Errorf("UTF-8 validation failed at row %d: %w", res.RowNum, validationErr)
+				}
+
 				if _, err := recStmt.ExecContext(
 					ingestCtx,
 					res.RowNum,
@@ -1636,7 +1724,7 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 					res.FileOffset,
 					res.LineLen,
 				); err != nil {
-					return err
+					return fmt.Errorf("record insert failed at row %d (id=%s): %w", res.RowNum, res.Src.ID, err)
 				}
 
 				// FTS insert removed - PostgreSQL uses ILIKE instead
@@ -2211,7 +2299,9 @@ func anyToString(v any) string {
 	case nil:
 		return ""
 	case string:
-		return value
+		// Sanitize UTF-8 in string values
+		sanitized, _ := ensureValidUTF8(value)
+		return sanitized
 	case bool:
 		if value {
 			return "true"
@@ -2220,7 +2310,9 @@ func anyToString(v any) string {
 	case float64:
 		return strconv.FormatFloat(value, 'f', -1, 64)
 	default:
-		return fmt.Sprintf("%v", value)
+		result := fmt.Sprintf("%v", value)
+		sanitized, _ := ensureValidUTF8(result)
+		return sanitized
 	}
 }
 
