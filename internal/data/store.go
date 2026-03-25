@@ -39,7 +39,7 @@ func ensureValidUTF8(s string) (string, bool) {
 	}
 	// Use RuneDecodeInString which automatically replaces invalid sequences with U+FFFD
 	var b strings.Builder
-	for i, r := range s {
+	for _, r := range s {
 		if r == utf8.RuneError {
 			// This rune is invalid (utf8.RuneError represents a decoding error)
 			b.WriteRune(r) // Write replacement character
