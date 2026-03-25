@@ -105,13 +105,6 @@ func main() {
 	go func() {
 		if *skipIndex {
 			log.Printf("index: skipping indexing due to --skip-index flag")
-			store.updateStatus(func(st *data.IndexStatus) {
-				st.Indexing = false
-				st.Ready = true
-				st.Step = "skipped"
-				st.Message = "indexing skipped by flag"
-				st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-			})
 			return
 		}
 		log.Printf("index: step=checking")
