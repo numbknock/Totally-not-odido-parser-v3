@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"os"
 	"regexp"
 	"runtime"
@@ -401,9 +402,12 @@ func (s *Store) EnsureIndex(ctx context.Context) error {
 }
 
 func (s *Store) EnsureTables(ctx context.Context) error {
-	schemaSQL := `
-		CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
+	log.Printf("schema: creating pg_trgm extension")
+	if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
+		return fmt.Errorf("failed to create pg_trgm extension: %w", err)
+	}
+	log.Printf("schema: creating tables")
+	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS records (
 			row_num BIGSERIAL PRIMARY KEY,
 			id TEXT,
@@ -440,7 +444,11 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		);
-
+	`); err != nil {
+		return fmt.Errorf("failed to create tables: %w", err)
+	}
+	log.Printf("schema: creating indexes")
+	if _, err := s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_records_id ON records(id);
 		CREATE INDEX IF NOT EXISTS idx_records_phone ON records(phone);
 		CREATE INDEX IF NOT EXISTS idx_records_haslog ON records(has_sobject_log);
@@ -456,9 +464,11 @@ func (s *Store) EnsureTables(ctx context.Context) error {
 		DROP INDEX IF EXISTS idx_json_fields_value;
 		CREATE INDEX IF NOT EXISTS idx_json_fields_value ON record_json_fields USING GIN (value_text gin_trgm_ops);
 		CREATE INDEX IF NOT EXISTS idx_json_fields_row ON record_json_fields(row_num);
-	`
-	_, err := s.db.ExecContext(ctx, schemaSQL)
-	return err
+	`); err != nil {
+		return fmt.Errorf("failed to create indexes: %w", err)
+	}
+	log.Printf("schema: setup complete")
+	return nil
 }
 
 func (s *Store) Health(ctx context.Context) (Health, error) {
@@ -1103,34 +1113,45 @@ func (s *Store) isIndexCurrent(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if exists == 0 {
+		log.Printf("index: metadata table doesn't exist, need to index")
 		return false, nil
 	}
 
 	size, err := s.metaValue(ctx, "source_size")
 	if err != nil {
+		log.Printf("index: no stored source_size, need to index: %v", err)
 		return false, nil
 	}
 	mtime, err := s.metaValue(ctx, "source_mtime_unix")
 	if err != nil {
+		log.Printf("index: no stored source_mtime_unix, need to index: %v", err)
 		return false, nil
 	}
 	version, err := s.metaValue(ctx, "index_version")
 	if err != nil {
+		log.Printf("index: no stored index_version, need to index: %v", err)
 		return false, nil
 	}
 
 	fileInfo, err := os.Stat(s.datasetPath)
 	if err != nil {
+		log.Printf("index: cannot stat dataset file: %v", err)
 		return false, err
 	}
 
+	log.Printf("index: checking current vs stored - version: %s vs %s, size: %s vs %d, mtime: %s vs %d",
+		version, indexVersion, size, fileInfo.Size(), mtime, fileInfo.ModTime().Unix())
+
 	if version != indexVersion {
+		log.Printf("index: version mismatch (%s != %s), need to reindex", version, indexVersion)
 		return false, nil
 	}
 	if size != strconv.FormatInt(fileInfo.Size(), 10) {
+		log.Printf("index: size mismatch (%s != %d), need to reindex", size, fileInfo.Size())
 		return false, nil
 	}
 	if mtime != strconv.FormatInt(fileInfo.ModTime().Unix(), 10) {
+		log.Printf("index: mtime mismatch (%s != %d), need to reindex", mtime, fileInfo.ModTime().Unix())
 		return false, nil
 	}
 
@@ -1139,9 +1160,16 @@ func (s *Store) isIndexCurrent(ctx context.Context) (bool, error) {
 		SELECT COUNT(1)
 		FROM information_schema.tables
 		WHERE table_schema = 'public' AND table_name = 'records'`).Scan(&recordsTable); err != nil {
+		log.Printf("index: error checking records table: %v", err)
 		return false, err
 	}
-	return recordsTable == 1, nil
+	if recordsTable != 1 {
+		log.Printf("index: records table doesn't exist, need to reindex")
+		return false, nil
+	}
+
+	log.Printf("index: index is current, skipping rebuild")
+	return true, nil
 }
 
 func (s *Store) metadataTableExists(ctx context.Context) (bool, error) {

@@ -39,6 +39,7 @@ func main() {
 		dbName      = flag.String("db-name", "odido_parser", "PostgreSQL database name")
 		fastIndex   = flag.Bool("fast-index", true, "enable aggressive tuning for faster index build")
 		ftsBroad    = flag.Bool("fts-broad", true, "index a broader set of keyword-relevant fields for full-text search")
+		skipIndex   = flag.Bool("skip-index", false, "skip indexing on startup (for development)")
 	)
 	flag.Parse()
 	if !*fastIndex {
@@ -92,7 +93,9 @@ func main() {
 	log.Printf("database: %s (host=%s port=%s user=%s dbname=%s)", *dbHost, *dbHost, *dbPort, *dbUser, *dbName)
 	log.Printf("startup: PostgreSQL database configured")
 	log.Printf("startup: step=init_schema begin")
-	if err := store.EnsureTables(ctx); err != nil {
+	schemaCtx, schemaCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer schemaCancel()
+	if err := store.EnsureTables(schemaCtx); err != nil {
 		log.Fatalf("startup: failed to initialize schema: %v", err)
 	}
 	log.Printf("startup: step=init_schema done")
@@ -100,6 +103,17 @@ func main() {
 	log.Printf("web: http://localhost%s", *addr)
 
 	go func() {
+		if *skipIndex {
+			log.Printf("index: skipping indexing due to --skip-index flag")
+			store.updateStatus(func(st *data.IndexStatus) {
+				st.Indexing = false
+				st.Ready = true
+				st.Step = "skipped"
+				st.Message = "indexing skipped by flag"
+				st.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			})
+			return
+		}
 		log.Printf("index: step=checking")
 		if err := store.EnsureIndex(ctx); err != nil {
 			log.Printf("index: failed: %v", err)
