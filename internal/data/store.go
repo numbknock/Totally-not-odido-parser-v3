@@ -55,13 +55,13 @@ func ensureValidUTF8(s string) (string, bool) {
 // Returns an error if any critical fields contain invalid UTF-8.
 func validateDataBeforeInsert(rowNum int64, id, name, email, phone, searchBlob string) error {
 	checks := map[string]string{
-		"id":           id,
-		"name":         name,
-		"email":        email,
-		"phone":        phone,
-		"search_blob":  searchBlob,
+		"id":          id,
+		"name":        name,
+		"email":       email,
+		"phone":       phone,
+		"search_blob": searchBlob,
 	}
-	
+
 	for fieldName, value := range checks {
 		if !utf8.ValidString(value) {
 			// Find the invalid bytes for better error reporting
@@ -75,11 +75,44 @@ func validateDataBeforeInsert(rowNum int64, id, name, email, phone, searchBlob s
 					}
 				}
 			}
-			return fmt.Errorf("invalid UTF-8 in field '%s' at row %d (byte position ~%d): %v", 
+			return fmt.Errorf("invalid UTF-8 in field '%s' at row %d (byte position ~%d): %v",
 				fieldName, rowNum, invalidPos, value[max(0, invalidPos-5):min(len(value), invalidPos+5)])
 		}
 	}
 	return nil
+}
+
+// sanitizeRecordUTF8 walks the record and replaces invalid UTF-8 sequences with
+// the replacement rune. It returns the number of fields that needed changes so
+// we can treat them as parse errors for reporting while still progressing.
+func sanitizeRecordUTF8(rowNum int64, src *sourceRecord) int {
+	fixed := 0
+	sanitize := func(field string, target *string) {
+		if target == nil {
+			return
+		}
+		cleaned, changed := ensureValidUTF8(*target)
+		if changed {
+			fixed++
+			*target = cleaned
+			log.Printf("index: sanitized invalid UTF-8 in field %s at row %d", field, rowNum)
+		}
+	}
+
+	sanitize("id", &src.ID)
+	sanitize("name", &src.Name)
+	sanitize("email", &src.Email)
+	sanitize("phone", &src.Phone)
+	sanitize("search_blob", &src.SearchBlob)
+	sanitize("sobject_log", &src.SObjectLog)
+	sanitize("flash_message", &src.FlashMessage)
+	sanitize("billing_city", &src.BillingCity)
+	sanitize("billing_state", &src.BillingState)
+	sanitize("billing_country", &src.BillingCountry)
+	sanitize("postal_code", &src.PostalCode)
+	sanitize("segment", &src.Segment)
+	sanitize("sales_channel", &src.SalesChannel)
+	return fixed
 }
 
 // max returns the maximum of two integers
@@ -1715,7 +1748,11 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 			if res.ParseError {
 				parseErrors++
 			} else {
-				// Validate UTF-8 encoding before attempting database insert
+				// Sanitize and validate UTF-8 before database insert. Do not abort the
+				// full index; count and skip problematic rows instead.
+				res.Src.SearchBlob = strings.TrimSpace(res.Src.SearchBlob)
+				parseErrors += int64(sanitizeRecordUTF8(res.RowNum, &res.Src))
+
 				if validationErr := validateDataBeforeInsert(
 					res.RowNum,
 					res.Src.ID,
@@ -1724,56 +1761,57 @@ func (s *Store) rebuildIndex(ctx context.Context) error {
 					res.Src.Phone,
 					res.Src.SearchBlob,
 				); validationErr != nil {
-					return fmt.Errorf("UTF-8 validation failed at row %d: %w", res.RowNum, validationErr)
-				}
+					parseErrors++
+					log.Printf("index: skipping row %d due to UTF-8 issue: %v", res.RowNum, validationErr)
+				} else {
+					if _, err := recStmt.ExecContext(
+						ingestCtx,
+						res.RowNum,
+						res.Src.ID,
+						res.Src.Name,
+						res.Src.Email,
+						res.Src.Phone,
+						boolToInt(strings.TrimSpace(res.Src.SObjectLog) != ""),
+						boolToInt(strings.TrimSpace(res.Src.FlashMessage) != ""),
+						res.Src.SearchBlob,
+						res.Src.Type,
+						res.Src.Status,
+						res.Src.Segment,
+						res.Src.SalesChannel,
+						res.Src.BillingCity,
+						res.Src.BillingState,
+						res.Src.BillingCountry,
+						res.Src.PostalCode,
+						res.Src.CreatedDate,
+						res.Src.ModifiedDate,
+						res.Active,
+						res.Deleted,
+						res.FileOffset,
+						res.LineLen,
+					); err != nil {
+						return fmt.Errorf("record insert failed at row %d (id=%s): %w", res.RowNum, res.Src.ID, err)
+					}
 
-				if _, err := recStmt.ExecContext(
-					ingestCtx,
-					res.RowNum,
-					res.Src.ID,
-					res.Src.Name,
-					res.Src.Email,
-					res.Src.Phone,
-					boolToInt(strings.TrimSpace(res.Src.SObjectLog) != ""),
-					boolToInt(strings.TrimSpace(res.Src.FlashMessage) != ""),
-					res.Src.SearchBlob,
-					res.Src.Type,
-					res.Src.Status,
-					res.Src.Segment,
-					res.Src.SalesChannel,
-					res.Src.BillingCity,
-					res.Src.BillingState,
-					res.Src.BillingCountry,
-					res.Src.PostalCode,
-					res.Src.CreatedDate,
-					res.Src.ModifiedDate,
-					res.Active,
-					res.Deleted,
-					res.FileOffset,
-					res.LineLen,
-				); err != nil {
-					return fmt.Errorf("record insert failed at row %d (id=%s): %w", res.RowNum, res.Src.ID, err)
-				}
+					// FTS insert removed - PostgreSQL uses ILIKE instead
 
-				// FTS insert removed - PostgreSQL uses ILIKE instead
-
-				if cfg.IndexJSONFields {
-					for _, field := range res.Fields {
-						pendingJSONFields = append(pendingJSONFields, jsonFieldWrite{
-							RowNum:    res.RowNum,
-							Path:      field.Path,
-							ValueText: field.ValueText,
-							ValueType: field.ValueType,
-						})
-						if len(pendingJSONFields) >= cfg.JSONFieldInsertBatch {
-							if err := flushJSONFieldChunk(pendingJSONFields[:cfg.JSONFieldInsertBatch]); err != nil {
-								return err
+					if cfg.IndexJSONFields {
+						for _, field := range res.Fields {
+							pendingJSONFields = append(pendingJSONFields, jsonFieldWrite{
+								RowNum:    res.RowNum,
+								Path:      field.Path,
+								ValueText: field.ValueText,
+								ValueType: field.ValueType,
+							})
+							if len(pendingJSONFields) >= cfg.JSONFieldInsertBatch {
+								if err := flushJSONFieldChunk(pendingJSONFields[:cfg.JSONFieldInsertBatch]); err != nil {
+									return err
+								}
+								pendingJSONFields = pendingJSONFields[cfg.JSONFieldInsertBatch:]
 							}
-							pendingJSONFields = pendingJSONFields[cfg.JSONFieldInsertBatch:]
 						}
 					}
+					insertedRows++
 				}
-				insertedRows++
 			}
 
 			lastCommittedRow = res.RowNum
